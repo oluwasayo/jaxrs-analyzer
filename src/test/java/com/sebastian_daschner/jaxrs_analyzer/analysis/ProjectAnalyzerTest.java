@@ -61,8 +61,8 @@ public class ProjectAnalyzerTest {
         final JavaCompiler.CompilationTask compilationTask = compiler.getTask(null, null, null, null, null, compilationUnits);
         assertTrue("Could not compile test project", compilationTask.call());
 
-        this.path = Paths.get(testClassPath).toAbsolutePath();
-        this.classUnderTest = new ProjectAnalyzer();
+        path = Paths.get(testClassPath).toAbsolutePath();
+        classUnderTest = new ProjectAnalyzer(path);
     }
 
     @Test

@@ -13,19 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package com.sebastian_daschner.jaxrs_analyzer;
 
-import com.sebastian_daschner.jaxrs_analyzer.analysis.ProjectAnalyzer;
-import com.sebastian_daschner.jaxrs_analyzer.backend.Backend;
-import com.sebastian_daschner.jaxrs_analyzer.backend.asciidoc.AsciiDocBackend;
-import com.sebastian_daschner.jaxrs_analyzer.backend.plaintext.PlainTextBackend;
-import com.sebastian_daschner.jaxrs_analyzer.backend.swagger.SwaggerBackend;
-import com.sebastian_daschner.jaxrs_analyzer.model.rest.Project;
-import com.sebastian_daschner.jaxrs_analyzer.model.rest.Resources;
+import com.sebastian_daschner.jaxrs_analyzer.backend.BackendType;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Inspects the information of JAX-RS classes via bytecode analysis.
@@ -34,55 +32,118 @@ import java.nio.file.Paths;
  */
 public class Main {
 
-    private static final String DEFAULT_NAME = "project";
-    private static final String DEFAULT_VERSION = "0.1-SNAPSHOT";
-    private static final String DEFAULT_DOMAIN = "example.com";
-
     /**
-     * Inspects the JAX-RS test project and prints the gathered information as swagger JSON.
+     * Inspects JAX-RS projects and outputs the gathered information.
+     * <p>
+     * Argument usage: {@code [options] projectPath [projectPaths...]}
+     * <p>
+     * The {@code projectPath} entries may be directories or jar-files containing the classes to be analyzed
+     * <p>
+     * Following available options:
+     * <ul>
+     * <li>{@code -b backend} The backend to choose: {@code swagger} (default), {@code plaintext}, {@code asciidoc}</li>
+     * <li>{@code -cp class path[:class paths...]} The additional class paths which contain classes which are used in the project</li>
+     * <li>{@code -X} Debug enabled (prints error debugging information on Standard error out)</li>
+     * <li>{@code -n project name} The name of the project</li>
+     * <li>{@code -v project version} The version of the project</li>
+     * <li>{@code -d project domain} The domain of the project</li>
+     * <li>{@code -o output file} The location of the analysis output (will be printed to standard out if omitted)</li>
+     * </ul>
      *
      * @param args The arguments
-     *             0: Path of the analyzed project
-     *             1: Backend (swagger (default), plaintext)
-     *             2: Name of the project
-     *             3: Version of the project
-     *             4: Domain of the deployed project
      */
     public static void main(final String... args) {
         if (args.length < 1) {
-            System.err.println("Usage: java -jar rest-documentation-analyzer.jar <projectPath> [<backend>] [<project name>] [<project version>] [<project domain>]");
-            System.err.println("Backends: swagger (default), plaintext");
-            System.exit(1);
+            printUsageAndExit();
         }
 
-        final Path projectLocation = Paths.get(args[0]);
+        final Set<Path> projectPaths = new HashSet<>();
+        final Set<Path> classPaths = new HashSet<>();
+        BackendType backendType = null;
+        String name = null;
+        String version = null;
+        String domain = null;
+        Path outputFileLocation = null;
 
-        if (!projectLocation.toFile().exists() || !projectLocation.toFile().isDirectory()) {
-            System.err.println("Please provide a valid directory!");
-            System.exit(1);
+        try {
+            for (int i = 0; i < args.length; i++) {
+                if (args[i].startsWith("-")) {
+                    switch (args[i]) {
+                        case "-b":
+                            backendType = BackendType.getByNameIgnoreCase(args[++i]);
+                            if (backendType == null) {
+                                System.err.println("Unknown backend " + args[i] + '\n');
+                                printUsageAndExit();
+                            }
+                            break;
+                        case "-cp":
+                            final List<Path> paths = Stream.of(args[++i].split(":"))
+                                    .map(s -> s.replaceFirst("^~", System.getProperty("user.home")))
+                                    .map(Paths::get).collect(Collectors.toList());
+                            paths.forEach(p -> {
+                                if (!p.toFile().exists()) {
+                                    System.err.println("Class path " + p.toFile() + " doesn't exist\n");
+                                    printUsageAndExit();
+                                }
+                            });
+
+                            paths.forEach(classPaths::add);
+                            break;
+                        case "-X":
+                            LogProvider.injectDebugLogger(System.err::println);
+                            break;
+                        case "-n":
+                            name = args[++i];
+                            break;
+                        case "-v":
+                            version = args[++i];
+                            break;
+                        case "-d":
+                            domain = args[++i];
+                            break;
+                        case "-o":
+                            outputFileLocation = Paths.get(args[++i]);
+                            break;
+                        default:
+                            System.err.print("Unknown option " + args[i] + '\n');
+                            printUsageAndExit();
+                    }
+                } else {
+                    final Path path = Paths.get(args[i].replaceFirst("^~", System.getProperty("user.home")));
+                    if (!path.toFile().exists()) {
+                        System.err.println("Location " + path.toFile() + " doesn't exist\n");
+                        printUsageAndExit();
+                    }
+                    projectPaths.add(path);
+                }
+            }
+        } catch (IndexOutOfBoundsException e) {
+            System.err.println("Please provide valid number of arguments\n");
+            printUsageAndExit();
         }
 
-        final String name = args.length >= 3 ? args[2] : DEFAULT_NAME;
-        final String version = args.length >= 4 ? args[3] : DEFAULT_VERSION;
-        final String domain = args.length >= 5 ? args[4] : DEFAULT_DOMAIN;
+        if (projectPaths.isEmpty()) {
+            System.err.println("Please provide at least one project path\n");
+            printUsageAndExit();
+        }
 
-        final Resources resources = new ProjectAnalyzer().analyze(projectLocation);
-        final Project project = new Project(name, version, domain, resources);
-
-        final String output = chooseBackend(args.length >= 2 ? args[1] : null).render(project);
-        System.out.println(output);
+        final JAXRSAnalyzer jaxrsAnalyzer = new JAXRSAnalyzer(projectPaths, classPaths, backendType, name, version, domain, outputFileLocation);
+        jaxrsAnalyzer.analyze();
     }
 
-    private static Backend chooseBackend(final String backendName) {
-        switch (backendName) {
-            case "plaintext":
-                return new PlainTextBackend();
-            case "asciidoc":
-                return new AsciiDocBackend();
-            case "swagger":
-            default:
-                return new SwaggerBackend();
-        }
+    private static void printUsageAndExit() {
+        System.err.println("Usage: java -jar jaxrs-analyzer.jar [options] classPath [classPaths...]");
+        System.err.println("The classPath entries may be directories or jar-files containing the classes to be analyzed\n");
+        System.err.println("Following available options:\n");
+        System.err.println(" -b <backend> The backend to choose: swagger (default), plaintext, asciidoc");
+        System.err.println(" -cp <class path>[:class paths] Additional class paths (separated with colon) which contain classes used in the project (may be directories or jar-files)");
+        System.err.println(" -X Debug enabled (enabled error debugging information)");
+        System.err.println(" -n <project name> The name of the project");
+        System.err.println(" -v <project version> The version of the project");
+        System.err.println(" -d <project domain> The domain of the project");
+        System.err.println(" -o <output file> The location of the analysis output (will be printed to standard out if omitted)");
+        System.err.println("\nExample: java -jar jaxrs-analyzer.jar -b swagger -n \"My Project\" -cp ~/libs/lib1.jar:~/libs/project/bin ~/project/target/classes");
+        System.exit(1);
     }
 
 }
